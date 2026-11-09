@@ -8,8 +8,9 @@ import (
 
 const defaultTracesSampleRate = 0
 
-// Official release images inject the public Sentry ingest DSN at build time.
-// Source builds stay disabled until a DSN is provided.
+// Error reporting is opt-in: both a DSN and an explicit enable switch are
+// required. Operators must set RAINBOND_ERROR_REPORTING_ENABLED=true (or one
+// of the scoped variants) to send any event outside the cluster.
 
 // Config keeps Sentry startup options derived from environment variables.
 type Config struct {
@@ -72,7 +73,8 @@ func parseEnabled(getenv func(string) string, scopedKeys ...string) bool {
 	if value := getenv("SENTRY_ENABLED"); value != "" {
 		return parseBool(value)
 	}
-	return true
+	// Opt-in: without an explicit enable switch nothing leaves the cluster.
+	return false
 }
 
 func firstEnv(getenv func(string) string, keys ...string) string {

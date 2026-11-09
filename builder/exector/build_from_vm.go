@@ -19,6 +19,7 @@ import (
 	"github.com/goodrain/rainbond/builder/sourceutil"
 	"github.com/goodrain/rainbond/db"
 	"github.com/goodrain/rainbond/event"
+	"github.com/goodrain/rainbond/pkg/security/egress"
 	"github.com/goodrain/rainbond/util"
 	utils "github.com/goodrain/rainbond/util"
 	platformconstants "github.com/goodrain/rainbond/util/constants"
@@ -336,6 +337,12 @@ func vmRemoteImageSourceDir(serviceID, eventID string) string {
 
 func downloadFile(downPath, url, token string, Logger event.Logger, metadata map[string]interface{}) error {
 	downloadStarted := time.Now()
+	if _, err := egress.Parse(url, false); err != nil {
+		return recordVMBuildStage(Logger, "vm_source_download", downloadStarted, err, mergeVMBuildMetadata(metadata, map[string]interface{}{
+			"url":        url,
+			"target_dir": downPath,
+		}))
+	}
 	// 创建一个 HTTP client 和 request
 	client := sourceutil.NewRemotePackageHTTPClient(url)
 	req, err := http.NewRequest("GET", url, nil)

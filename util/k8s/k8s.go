@@ -174,6 +174,16 @@ func MustNewKubeConfig(kubeconfigPath string) *rest.Config {
 		return cfg
 	}
 
+	// Outside a cluster the service account lookup is unavailable, so fall back
+	// to the kubeconfig referenced by KUBECONFIG before trying in-cluster config.
+	if envPath := os.Getenv("KUBECONFIG"); envPath != "" {
+		cfg, err := clientcmd.BuildConfigFromFlags("", envPath)
+		if err == nil {
+			return cfg
+		}
+		logrus.Warnf("load kubeconfig from KUBECONFIG %q failed: %v", envPath, err)
+	}
+
 	cfg, err := InClusterConfig()
 	if err != nil {
 		panic(err)

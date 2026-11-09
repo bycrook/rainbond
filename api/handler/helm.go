@@ -11,6 +11,7 @@ import (
 	"github.com/goodrain/rainbond/pkg/component/storage"
 	"github.com/goodrain/rainbond/pkg/generated/clientset/versioned"
 	"github.com/goodrain/rainbond/pkg/helm"
+	"github.com/goodrain/rainbond/pkg/security/egress"
 	rutil "github.com/goodrain/rainbond/util"
 	hrepo "github.com/helm/helm/pkg/repo"
 	"github.com/pkg/errors"
@@ -65,7 +66,11 @@ var (
 
 // GetChartInformation 获取 helm 应用 chart 包的详细版本信息
 func (h *HelmAction) GetChartInformation(chart apimodel.ChartInformation) (*[]apimodel.HelmChartInformation, *util.APIHandleError) {
-	req, err := http.NewRequest("GET", chart.RepoURL+"/index.yaml", nil)
+	indexURL := chart.RepoURL + "/index.yaml"
+	if _, err := egress.Parse(indexURL, false); err != nil {
+		return nil, &util.APIHandleError{Code: 400, Err: errors.Wrap(err, "GetChartInformation validate repo url")}
+	}
+	req, err := http.NewRequest("GET", indexURL, nil)
 	if err != nil {
 		return nil, &util.APIHandleError{Code: 400, Err: errors.Wrap(err, "GetChartInformation NewRequest")}
 	}

@@ -14,6 +14,7 @@ func TestConfigFromEnvStaysDisabledWithoutDSN(t *testing.T) {
 
 func TestConfigFromEnvReadsValuesAndClampsSampleRate(t *testing.T) {
 	values := map[string]string{
+		"RAINBOND_ERROR_REPORTING_ENABLED":     "true",
 		"RAINBOND_ERROR_REPORTING_DSN":         "https://example.invalid/1",
 		"RAINBOND_ERROR_REPORTING_ENVIRONMENT": "production",
 		"RAINBOND_ERROR_REPORTING_RELEASE":     "v6.9.1-dev",
@@ -42,6 +43,7 @@ func TestConfigFromEnvReadsValuesAndClampsSampleRate(t *testing.T) {
 
 func TestConfigFromEnvPrefersRegionDSN(t *testing.T) {
 	values := map[string]string{
+		"RAINBOND_ERROR_REPORTING_ENABLED":     "true",
 		"RAINBOND_ERROR_REPORTING_DSN":         "https://shared.example.invalid/1",
 		"RAINBOND_ERROR_REPORTING_BACKEND_DSN": "https://backend.example.invalid/2",
 		"RAINBOND_ERROR_REPORTING_REGION_DSN":  "https://region.example.invalid/3",
@@ -84,6 +86,19 @@ func TestConfigFromEnvAllowsGlobalTelemetryDisable(t *testing.T) {
 
 	if cfg.Enabled {
 		t.Fatalf("expected telemetry disabled switch to win")
+	}
+}
+
+func TestConfigFromEnvRequiresExplicitOptIn(t *testing.T) {
+	values := map[string]string{
+		"RAINBOND_ERROR_REPORTING_DSN": "https://example.invalid/1",
+	}
+	cfg := configFromEnv(func(key string) string {
+		return values[key]
+	})
+
+	if cfg.Enabled {
+		t.Fatalf("expected error reporting to stay disabled without explicit opt-in")
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"github.com/goodrain/rainbond-operator/api/v1alpha1"
 	"github.com/goodrain/rainbond-operator/util/constants"
 	"github.com/goodrain/rainbond/grctl/clients"
+	"github.com/goodrain/rainbond/pkg/security/egress"
 	utils "github.com/goodrain/rainbond/util"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -36,8 +37,16 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
+)
+
+const (
+	// envSuffixAPI points at the domain suffix service. The feature is opt-in
+	// so a cluster never registers its gateway IP with a public service unless
+	// the operator asks for it.
+	envSuffixAPI = "RBD_DOMAIN_SUFFIX_API"
 )
 
 // RegionInfo -
@@ -242,6 +251,21 @@ func NewCmdReplace() cli.Command {
 	return c
 }
 
+// suffixAPIURL resolves the domain suffix service endpoint. The endpoint must
+// be configured explicitly, otherwise the feature stays disabled and no
+// cluster identity leaves the cluster.
+func suffixAPIURL() (string, error) {
+	value := strings.TrimSpace(os.Getenv(envSuffixAPI))
+	if value == "" {
+		return "", fmt.Errorf("domain suffix service is disabled, set %s to opt in (for example https://domain.grapps.cn/domain/new)", envSuffixAPI)
+	}
+	target, err := egress.Parse(value, true)
+	if err != nil {
+		return "", errors.Wrap(err, "domain suffix api rejected")
+	}
+	return target.String(), nil
+}
+
 // SendtoConsole -
 func SendtoConsole(domain, token string, regionInfo *RegionInfo) (err error) {
 	reqParam, err := json.Marshal(&regionInfo)
@@ -251,7 +275,12 @@ func SendtoConsole(domain, token string, regionInfo *RegionInfo) (err error) {
 	}
 	client := &http.Client{}
 	consoleDomain := fmt.Sprintf("%s%s", strings.TrimSuffix(domain, "/"), "/openapi/v1/grctl/ip")
-	request, err := http.NewRequest("POST", consoleDomain,
+	target, err := egress.Parse(consoleDomain, true)
+	if err != nil {
+		logrus.Error("console domain rejected: ", err)
+		return err
+	}
+	request, err := http.NewRequest("POST", target.String(),
 		strings.NewReader(string(reqParam)))
 	if err != nil {
 		logrus.Error("request reader fail", err)
@@ -321,13 +350,17 @@ func GenerateSuffixConfigMap(name, namespace string) *corev1.ConfigMap {
 
 // GenerateDomain generate suffix domain
 func GenerateDomain(iip, id, secretKey string) (string, error) {
+	target, err := suffixAPIURL()
+	if err != nil {
+		return "", err
+	}
 	body := make(url.Values)
 	body["ip"] = []string{iip}
 	body["uuid"] = []string{id}
 	body["type"] = []string{"False"}
 	body["auth"] = []string{secretKey}
 
-	resp, err := http.PostForm("http://domain.grapps.cn/domain/new", body)
+	resp, err := http.PostForm(target, body)
 	if err != nil {
 		return "", err
 	}

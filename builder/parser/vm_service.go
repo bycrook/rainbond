@@ -28,6 +28,7 @@ import (
 	"github.com/goodrain/rainbond/builder/parser/discovery"
 	"github.com/goodrain/rainbond/builder/sourceutil"
 	"github.com/goodrain/rainbond/event"
+	"github.com/goodrain/rainbond/pkg/security/egress"
 	"github.com/sirupsen/logrus"
 )
 
@@ -119,6 +120,10 @@ func (t *VMServiceParse) errappend(pe ParseError) {
 }
 
 func (t *VMServiceParse) probeRemotePackage() (*http.Response, error) {
+	if _, err := egress.Parse(t.sourceBody, false); err != nil {
+		logrus.Errorf("远端安装包地址校验失败 %v: %v", t.sourceBody, err)
+		return nil, fmt.Errorf("outbound source rejected: %w", err)
+	}
 	req, err := http.NewRequest(http.MethodHead, t.sourceBody, nil)
 	if err != nil {
 		logrus.Errorf("创建 HTTP HEAD 请求失败 %v: %v", t.sourceBody, err)
