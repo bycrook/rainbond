@@ -7,6 +7,7 @@ import (
 	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi"
 	"github.com/goodrain/rainbond/api/handler"
@@ -303,7 +304,16 @@ func (a *ApplicationController) ListHelmAppReleases(w http.ResponseWriter, r *ht
 // ListAppStatuses returns the status of the applications.
 func (a *ApplicationController) ListAppStatuses(w http.ResponseWriter, r *http.Request) {
 	var req model.AppStatusesReq
-	if !httputil.ValidatorRequestStructAndErrorResponse(r, w, &req, nil) {
+	// GET requests cannot rely on a body: proxies may drop it. Accept the ids
+	// from the query string first and fall back to the JSON body for clients
+	// that still send one.
+	if raw := strings.TrimSpace(r.URL.Query().Get("app_ids")); raw != "" {
+		for _, appID := range strings.Split(raw, ",") {
+			if appID = strings.TrimSpace(appID); appID != "" {
+				req.AppIDs = append(req.AppIDs, appID)
+			}
+		}
+	} else if !httputil.ValidatorRequestStructAndErrorResponse(r, w, &req, nil) {
 		return
 	}
 	res, err := handler.GetApplicationHandler().ListAppStatuses(r.Context(), req.AppIDs)

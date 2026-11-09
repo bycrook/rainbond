@@ -27,6 +27,7 @@ import (
 	"net/http"
 	_ "net/http/pprof" // Register handlers for the dedicated diagnostics server.
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -99,6 +100,14 @@ func (m *Manager) SetMiddleware() {
 	r.Use(middleware.RealIP)
 	//Logs the start and end of each request with the elapsed processing time
 	if m.LogConfig.LoggerFile != "" {
+		// The default path lives under /logs, which does not exist in a bare
+		// host or dev environment. Create it instead of silently losing the
+		// request log.
+		if dir := filepath.Dir(m.LogConfig.LoggerFile); dir != "" && dir != "." {
+			if mkErr := os.MkdirAll(dir, 0755); mkErr != nil {
+				logrus.Warnf("create logger dir %s error %s", dir, mkErr.Error())
+			}
+		}
 		logerFile, err := os.OpenFile(m.LogConfig.LoggerFile, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 		if err != nil {
 			logrus.Errorf("open logger file %s error %s", m.LogConfig.LoggerFile, err.Error())

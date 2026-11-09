@@ -637,6 +637,13 @@ func (t *TenantStruct) CreateService(w http.ResponseWriter, r *http.Request) {
 		httputil.ReturnBcodeError(r, w, bcode.ErrCreateNeedCorrectAppID)
 		return
 	}
+	// The component id is the primary key of every downstream record (ports,
+	// env vars, relations, gateway rules). Persisting an empty id would create
+	// a component that can never be managed again, so reject it explicitly.
+	if strings.TrimSpace(ss.ServiceID) == "" {
+		httputil.ReturnValidationError(r, w, url.Values{"service_id": []string{"service_id is required"}})
+		return
+	}
 	_, err := handler.GetApplicationHandler().GetAppByID(ss.AppID)
 	if err != nil {
 		httputil.ReturnBcodeError(r, w, err)
