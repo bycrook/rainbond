@@ -145,12 +145,33 @@ func (n *nodesHandle) ListChaosNodeArch(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	var nodeArchs []string
+	seenArch := make(map[string]struct{})
 	for _, node := range nodes.Items {
 		address := node.Status.Addresses
 		for _, addr := range address {
 			if addr.Type == NodeInternalIP && chaosNodeIP[addr.Address] == 1 {
-				nodeArchs = append(nodeArchs, node.Status.NodeInfo.Architecture)
+				if _, ok := seenArch[node.Status.NodeInfo.Architecture]; !ok {
+					seenArch[node.Status.NodeInfo.Architecture] = struct{}{}
+					nodeArchs = append(nodeArchs, node.Status.NodeInfo.Architecture)
+				}
 			}
+		}
+	}
+	// The build service may run outside the cluster (host process or external
+	// builder), in which case no pod carries the rbd-chaos label and the list
+	// would be empty. Fall back to the architectures of all nodes so deploying
+	// a component is not blocked by an empty answer.
+	if len(nodeArchs) == 0 {
+		for _, node := range nodes.Items {
+			arch := node.Status.NodeInfo.Architecture
+			if arch == "" {
+				continue
+			}
+			if _, ok := seenArch[arch]; ok {
+				continue
+			}
+			seenArch[arch] = struct{}{}
+			nodeArchs = append(nodeArchs, arch)
 		}
 	}
 	return nodeArchs, nil

@@ -53,6 +53,13 @@ func NewClientsetOrDie(kubecfg string) kubernetes.Interface {
 // NewRestConfig new rest config
 func NewRestConfig(kubecfg string) (restConfig *rest.Config, err error) {
 	if kubecfg == "" {
+		// Prefer KUBECONFIG when running outside a cluster; InClusterConfig
+		// panics when it cannot resolve kubernetes.default.svc.
+		if envPath := os.Getenv("KUBECONFIG"); envPath != "" {
+			if cfg, cerr := clientcmd.BuildConfigFromFlags("", envPath); cerr == nil {
+				return cfg, nil
+			}
+		}
 		return InClusterConfig()
 	}
 	return clientcmd.BuildConfigFromFlags("", kubecfg)
@@ -70,7 +77,10 @@ func InClusterConfig() (*rest.Config, error) {
 	if len(os.Getenv("KUBERNETES_SERVICE_HOST")) == 0 {
 		addrs, err := net.LookupHost("kubernetes.default.svc")
 		if err != nil {
-			panic(err)
+			// Return the error instead of panicking: callers outside a cluster
+			// (local dev, websocket/file-server goroutines) must not crash the
+			// whole process.
+			return nil, err
 		}
 		os.Setenv("KUBERNETES_SERVICE_HOST", addrs[0])
 	}

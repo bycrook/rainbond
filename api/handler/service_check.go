@@ -101,6 +101,10 @@ func (s *ServiceAction) GetServiceCheckInfo(uuid string) (*exector.ServiceCheckR
 	var si exector.ServiceCheckResult
 	resp, err := db.GetManager().KeyValueDao().Get(k)
 	if err != nil || resp == nil {
+		// No detection task was ever started for this uuid. Returning an empty
+		// status makes the console normalise it to "checking" and poll forever,
+		// which blocks the create-component wizard for non-source components.
+		si.CheckStatus = "success"
 		return &si, nil
 	}
 
