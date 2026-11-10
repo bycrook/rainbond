@@ -31,7 +31,9 @@ API_HEALTHZ=${API_HEALTHZ:-0.0.0.0:8889}
 API_PORT=${API_PORT:-${API_ADDR##*:}}
 MQ_PORT=${MQ_PORT:-6300}
 PROM_PORT=${PROM_PORT:-9999}
-CONSOLE_PORT=${CONSOLE_PORT:-37070}
+CONSOLE_PORT=${CONSOLE_PORT:-8000}
+# 控制台只监听本机，对外统一由 Nginx 提供 HTTPS（443）
+CONSOLE_BIND=${CONSOLE_BIND:-127.0.0.1}
 MYSQL_DSN=${MYSQL_DSN:-admin:admin@tcp(127.0.0.1:3306)/region}
 
 mkdir -p "$LOG_DIR" "$PID_DIR"
@@ -137,10 +139,87 @@ start_api() {
         --worker-api "127.0.0.1:6535" \
         --prom-api "127.0.0.1:$PROM_PORT" \
         --hub-api "http://127.0.0.1:5000" \
+        --builder-api "127.0.0.1:3228" \
         --storage-type local \
         --api-addr "$API_ADDR" \
         --api-healthz-addr "$API_HEALTHZ" >"$LOG_DIR/api.log" 2>&1 &
     wait_port "$API_PORT" 40 || warn "rbd-api 未在 $API_PORT 监听"
+}
+
+worker_bin() {
+    if [ -x "$GO_REPO/_output/bin/rainbond-worker" ]; then
+        echo "$GO_REPO/_output/bin/rainbond-worker"
+    else
+        echo "/usr/local/bin/rainbond-worker"
+    fi
+}
+
+start_worker() {
+    if port_open 6535; then
+        log "rbd-worker 已在运行"
+        return 0
+    fi
+    log "启动 rbd-worker (:6535，node-name=$(hostname))"
+    KUBECONFIG="$KUBECONFIG_FILE" nohup "$(worker_bin)" \
+        --kube-config "$KUBECONFIG_FILE" \
+        --mysql "$MYSQL_DSN" \
+        --event-servers "127.0.0.1:6366" \
+        --mq-api "127.0.0.1:$MQ_PORT" \
+        --worker-api "127.0.0.1:6535" \
+        --prom-api "127.0.0.1:$PROM_PORT" \
+        --hub-api "http://127.0.0.1:5000" \
+        --node-name "$(hostname)" >"$LOG_DIR/worker.log" 2>&1 &
+    wait_port 6535 40 || warn "rbd-worker 未在 6535 监听"
+}
+
+start_hub() {
+    if port_open 5000; then
+        log "rbd-hub 已在运行"
+        return 0
+    fi
+    if ! command -v docker >/dev/null 2>&1; then
+        warn "未安装 docker，跳过 rbd-hub"
+        return 1
+    fi
+    log "启动 rbd-hub (registry:2, :5000)"
+    mkdir -p /grdata/registry
+    docker rm -f rbd-hub >/dev/null 2>&1
+    docker run -d --name rbd-hub --restart=always -p 5000:5000 \
+        -v /grdata/registry:/var/lib/registry registry:2 >/dev/null
+    wait_port 5000 20 || warn "rbd-hub 未在 5000 监听"
+}
+
+chaos_bin() {
+    if [ -x "$GO_REPO/_output/bin/rainbond-chaos" ]; then
+        echo "$GO_REPO/_output/bin/rainbond-chaos"
+    else
+        echo "/usr/local/bin/rainbond-chaos"
+    fi
+}
+
+start_chaos() {
+    if port_open 3228; then
+        log "rbd-chaos 已在运行"
+        return 0
+    fi
+    log "启动 rbd-chaos (构建服务 :3228)"
+    KUBECONFIG="$KUBECONFIG_FILE" BUILD_IMAGE_REPOSTORY_DOMAIN="127.0.0.1:5000" nohup "$(chaos_bin)" \
+        --container-runtime docker \
+        --dockerd "127.0.0.1:2376" \
+        --hub-api "http://127.0.0.1:5000" \
+        --mysql "$MYSQL_DSN" \
+        --event-servers "127.0.0.1:6366" \
+        --mq-api "127.0.0.1:$MQ_PORT" \
+        --worker-api "127.0.0.1:6535" \
+        --prom-api "127.0.0.1:$PROM_PORT" \
+        --kube-config "$KUBECONFIG_FILE" \
+        --storage-type local \
+        --hostIP "$(hostname -I | awk '{print $1}')" \
+        --hostName "$(hostname)" \
+        --api-port 3228 \
+        --ws-addr "0.0.0.0:6061" \
+        --registry-mirrors "https://docker.m.daocloud.io" >"$LOG_DIR/chaos.log" 2>&1 &
+    wait_port 3228 30 || warn "rbd-chaos 未在 3228 监听"
 }
 
 start_console() {
@@ -152,11 +231,14 @@ start_console() {
         warn "未找到 console 虚拟环境：$CONSOLE_PY"
         return 1
     fi
-    log "启动 console (:$CONSOLE_PORT，遥测已禁用)"
+    log "启动 console ($CONSOLE_BIND:$CONSOLE_PORT，遥测/云市场已禁用)"
     cd "$CONSOLE_REPO" || return 1
+    # DISABLE_CLOUD_MARKET also short-circuits the update check that would
+    # otherwise call https://get.rainbond.com/upgrade-versions.json.
     DATA_DIR="$DATA_DIR" ALLOWED_HOSTS='*' DEBUG=True \
         RAINBOND_TELEMETRY_DISABLED=true POSTHOG_DISABLED=true \
-        nohup "$CONSOLE_PY" manage.py runserver "0.0.0.0:$CONSOLE_PORT" --noreload \
+        DISABLE_CLOUD_MARKET=true \
+        nohup "$CONSOLE_PY" manage.py runserver "$CONSOLE_BIND:$CONSOLE_PORT" --noreload \
         >"$LOG_DIR/console.log" 2>&1 &
     wait_port "$CONSOLE_PORT" 40 || warn "console 未在 $CONSOLE_PORT 监听"
 }
@@ -176,14 +258,27 @@ stop_process() {
     fi
 }
 
+start_nginx() {
+    if systemctl is-active --quiet nginx; then
+        log "Nginx 已在运行（HTTPS 入口）"
+        return 0
+    fi
+    log "启动 Nginx（HTTPS 入口，4443）"
+    systemctl start nginx
+}
+
 cmd_start() {
     start_mariadb
     start_k3s
     start_metrics
+    start_hub
     start_mq
     start_api
+    start_worker
+    start_chaos
     start_console
-    log "启动完成，控制台：http://<本机IP>:$CONSOLE_PORT/"
+    start_nginx
+    log "启动完成，控制台：https://<本机IP>:4443/"
 }
 
 cmd_stop() {
@@ -191,6 +286,10 @@ cmd_stop() {
     stop_process "rainbond-api" "rbd-api"
     stop_process "rainbond-mq" "rbd-mq"
     stop_process "prometheus --config.file=/etc/prometheus/rbd-local.yml" "Prometheus"
+    if systemctl is-active --quiet nginx; then
+        log "停止 Nginx"
+        systemctl stop nginx
+    fi
     if [ "${1:-}" = "--all" ]; then
         log "停止 node_exporter / k3s / MariaDB"
         systemctl stop prometheus-node-exporter 2>/dev/null
@@ -203,9 +302,13 @@ cmd_status() {
     printf '%-26s %-8s %s\n' "组件" "端口" "状态"
     local pairs=(
         "console:$CONSOLE_PORT"
+        "console-https:4443"
         "rbd-api:$API_PORT"
         "rbd-api-healthz:${API_HEALTHZ##*:}"
         "rbd-mq:$MQ_PORT"
+        "rbd-hub:5000"
+        "rbd-worker:6535"
+        "rbd-chaos:3228"
         "Prometheus:$PROM_PORT"
         "node_exporter:9100"
     )

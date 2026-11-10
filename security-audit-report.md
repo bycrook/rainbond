@@ -168,3 +168,73 @@ RBD_TEL_HB_20261109       = true      # 当日心跳已记录
 
 - 上游 `goodrain/rainbond` main 与本地 fork 同一提交 `bbb1e5bdd`（`v6.10.3-release`），Go 后端无需升级
 - "有新版本"提示由控制台版本检查产生，该版本新增的即为上述遥测能力
+
+---
+
+## 控制台外联通路复核与封禁（2026-11-10）
+
+在遥测开关关闭之后，对控制台做了一次完整的外联复核，确认仍存在两类**非遥测**的厂商外联，并全部封禁。
+
+### 复核方法
+
+| 手段 | 说明 |
+|---|---|
+| 源码检索 | 在 `rainbond-console` 全仓检索 `grapps.cn` / `goodrain.com` / `rainbond.com` / `posthog` / `sentry` |
+| 接口实测 | 携带有效 JWT 调用 `/console/update/versions`，观察是否返回远端真实数据 |
+| DNS 验证 | `getent hosts` 确认域名可解析（说明只是"不发"，不是"解析不了"） |
+| 连通性验证 | `curl` 直连厂商域名，确认网络层可达 |
+
+### 发现一：版本检查外联 `get.rainbond.com`
+
+```
+console/views/upgrade.py:48
+JSON_URL = os.getenv("VERSION_INFO_URL", "https://get.rainbond.com/upgrade-versions.json")
+response = requests.get(JSON_URL, timeout=VERSION_INFO_TIMEOUT)   # 无缓存，每次实时拉取
+```
+
+实测 `/console/update/versions` 返回真实版本列表（`v6.10.3-release` 等），证明外联成功。外发内容为普通 GET（出口 IP、时间、默认 UA），无实例 ID、无版本号、无集群信息 → **风险等级：低**，但属不必要的外部依赖。
+
+### 发现二：云市场外联 `hub.grapps.cn`
+
+```
+app_market 表：('RainbondMarket', 'https://hub.grapps.cn', 'rainstore', 'rainbond')   # 默认启用
+console/views/app_server_proxy.py:14   target_base_url = 'https://hub.grapps.cn'
+console/views/center_pool/apps.py:186  market_domain = "https://hub.grapps.cn"
+```
+
+打开「应用市场 / 云端组件库」时控制台代理拉取模板元数据（MySQL 版本列表等）。外发内容本身不敏感，但**返回的模板内容（镜像地址、启动参数、Chart）不可控** → **风险等级：中**。
+
+### 处置（已执行）
+
+| 层 | 动作 | 结果 |
+|---|---|---|
+| 环境变量 | 控制台启动注入 `DISABLE_CLOUD_MARKET=true`（写入 `scripts/local-stack.sh`） | `is_cloud_market_disabled()` 短路版本检查与市场拉取 |
+| 主机解析 | `/etc/hosts` 将 5 个厂商域名指向 `127.0.0.1` | 主机进程快速失败 |
+| 网络层 | `iptables` 自定义链 `RBD_VENDOR_BLOCK`，按公网 DNS 解析结果 REJECT | 覆盖自定义解析器等绕过 hosts 的场景 |
+| 脚本化 | 新增 `scripts/block-vendor-egress.sh {enable|disable|status}` | 可重复执行、幂等 |
+
+封禁域名清单：
+
+```
+get.rainbond.com      版本检查
+hub.grapps.cn         云端组件库 / 应用市场
+posthog.goodrain.com  PostHog 遥测
+sentry.goodrain.com   Sentry 错误上报
+domain.grapps.cn      grctl 域名后缀服务
+```
+
+### 验证结果
+
+```
+/console/update/versions        → []            （原为完整版本列表）
+curl get.rainbond.com           → BLOCKED
+curl hub.grapps.cn              → BLOCKED
+curl posthog.goodrain.com       → BLOCKED
+curl sentry.goodrain.com        → BLOCKED
+控制台应用列表 / 组件操作        → 200           （功能未受影响）
+```
+
+### 遗留
+
+1. `/etc/hosts` 只对主机进程生效，**容器内进程仍需网络层规则**：脚本的 `--with-forward` 可把同一链挂到 FORWARD，或在集群出口网关统一封禁
+2. 云市场关闭后，控制台「应用市场」页面为空属预期；组件来源改为**镜像直连创建**或**本地组件库**
